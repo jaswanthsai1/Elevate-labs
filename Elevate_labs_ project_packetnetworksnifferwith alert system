@@ -1,0 +1,48 @@
+import scapy.all as scapy
+import sqlite3
+from datetime import datetime
+import threading
+
+# SQLite DB setup
+conn = sqlite3.connect("traffic_log.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("""CREATE TABLE IF NOT EXISTS packets (
+    timestamp TEXT,
+    src_ip TEXT,
+    dst_ip TEXT,
+    protocol TEXT,
+    length INTEGER,
+    flags TEXT
+)""")
+conn.commit()
+
+# Anomaly detection state
+packet_counts = {}
+
+# Function to log packets to SQLite
+def log_packet(packet):
+    if packet.haslayer(scapy.IP):
+        ip_layer = packet[scapy.IP]
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        src = ip_layer.src
+        dst = ip_layer.dst
+        proto = ip_layer.proto
+        length = len(packet)
+        flags = str(packet.sprintf("%TCP.flags%")) if packet.haslayer(scapy.TCP) else "N/A"
+
+        cursor.execute("INSERT INTO packets VALUES (?, ?, ?, ?, ?, ?)", 
+                       (timestamp, src, dst, proto, length, flags))
+        conn.commit()
+
+        # Count packets for basic anomaly detection
+        packet_counts[src] = packet_counts.get(src, 0) + 1
+        if packet_counts[src] > 100:  # Threshold
+            print(f"[!] ALERT: Potential scan/flood from {src}")
+
+# Sniffing packets
+def start_sniffing():
+    print("[*] Starting packet capture...")
+    scapy.sniff(prn=log_packet, store=False)
+
+# Start in a thread
+threading.Thread(target=start_sniffing).start()
